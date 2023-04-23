@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <title>Radar</title>
+</head>
+
+<body style="background-color:black">
+    <div class="col-md-3" style="margin:auto;width:1024">
+        <canvas id="radar" width="1024" height="1024" style="z-index:1000;position:relative;"></canvas>
+
+        <fieldset>
+            <legend style="color: #ffffff;">Settings:</legend>
+
+            <label for="radar_ratio" class="form-label" style="color: white;">Radar Scale</label> -->
+            <input type="range" onchange="set_convassacle()" class="form-range" min=0.1 max=1 step=0.1 value=0.5
+                id="radar_scale">
+
+            <!-- <div>
+                <input type="checkbox" id="DrawWeapon" name="DrawWeapon" checked>
+                <label for="DrawWeapon" style="color: #ffffff;">DrawWeapon</label>
+            </div> -->
+
+            <div>
+                <input type="checkbox" id="DrawTeam" name="DrawTeam">
+                <label for="DrawTeam" style="color: #ffffff;">DrawTeam</label>
+            </div>
+            <div>
+                <input type="checkbox" id="DrawName" name="DrawName">
+                <label for="DrawName" style="color: #ffffff;">DrawName</label>
+            </div>
+        </fieldset>
+
+    </div>
+</body>
+
+<script>
+    const ws = new WebSocket("ws://" + window.location.hostname + ":6969");
+
+    const canvas = document.getElementById("radar");
+    const ctx = canvas.getContext("2d");
+
+    const map = document.getElementById("map");
+    const base_data_path = "/data";
+
+    let ratio = 0.5;
+
+    let pos_x;
+    let pos_y;
+    let scale;
+    let prev_map_name;
+    let player_dot_size = 4;
+    let image = new Image();
+    image.src = "data/images/de_nuke_radar.png";
+
+    function drawbg() {
+        if (localplayer) {
+            const me_x_position = localplayer["x_position"];
+            const me_y_position = localplayer["y_position"];
+            const me_mapped_x = ((me_x_position - pos_x) / scale) * ratio;
+            const me_mapped_y = ((me_y_position - pos_y) / -scale) * ratio;
+
+            //ctx.translate(240, 240);
+            ctx.translate(512, 512);
+
+            ctx.rotate((localplayer["rot_y_ang"] - 90) * Math.PI / 180);
+
+
+            canvas.hidden = true;
+
+            ctx.drawImage(image, -me_mapped_x, -me_mapped_y, 1024 * ratio, 1024 * ratio);
+
+
+            ctx.globalCompositeOperation = "destination-in";
+            // draw our circle mask
+            ctx.fillStyle = "#000";
+            ctx.beginPath();
+            ctx.arc(
+                0, // x
+                0, // y
+                270, // radius
+                0, // start angle`
+                2 * Math.PI // end angle
+            );
+            ctx.fill();
+
+            ctx.globalCompositeOperation = "source-over";
+
+            canvas.hidden = false
+        } else {
+            ctx.save();
+            ctx.beginPath();
+
+            ctx.textAlign = "center";
+            ctx.fillStyle = "white";
+            ctx.font = "80px 微软雅黑";
+            ctx.fillText("No Map Load!", 512, 300);
+            ctx.restore();
+        }
+    }
+
+    function update_map_data() {
+        const data_path = base_data_path + "/" + prev_map_name;
+        fetch(data_path).then((res) => {
+            res.json().then((data) => {
+                pos_x = data.pos_x;
+                pos_y = data.pos_y;
+                scale = data.scale;
+            });
+        });
+    }
+
+    function draw_entity(x, y, r, g, b, a, y_angle, local_yangle, player_name) {
+        ctx.beginPath();
+        //ctx.rect(x, y, 5, 5);
+        ctx.arc(x, y, player_dot_size, 0, 2 * Math.PI, false)
+        ctx.fillStyle = `rgb(${r}, ${g}, ${b}, ${a})`;
+        ctx.fill();
+
+
+        ctx.save();
+        //设置新坐标
+        ctx.translate(x, y);
+        //旋转文字
+        ctx.rotate((-local_yangle + 90) * Math.PI / 180);
+        ctx.textAlign = "center";
+        ctx.fillStyle = "white";
+        ctx.font = "10px 微软雅黑";
+
+        if (player_name != undefined) {
+            if (DrawName.checked) {
+                ctx.fillText(player_name, 5, 15);
+            }
+        }
+
+        ctx.restore();
+        draw_arrow(x, y, y_angle)
+    }
+
+    function draw_local(x, y, r, g, b, a, y_angle, player_name) {
+        ctx.beginPath();
+        ctx.arc(0, 0, player_dot_size, 0, 2 * Math.PI, false)
+        ctx.fillStyle = `rgb(${r}, ${g}, ${b}, ${a})`;
+        ctx.fill();
+        draw_arrow(0, 0, y_angle)
+        ctx.closePath();
+    }
+
+    function draw_arrow(x, y, ang) {
+        if (ang == undefined) {
+            return;
+        }
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate((-ang + 90) * Math.PI / 180);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = 'white';
+        ctx.beginPath();
+        ctx.moveTo(-player_dot_size, -player_dot_size);
+        ctx.lineTo(0, -player_dot_size * 2);
+        ctx.lineTo(player_dot_size, -player_dot_size);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    function clear_canvas() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    function normalize(val, min, max) {
+        const clamped_val = Math.min(Math.max(val, min), max);
+        return (clamped_val - min) / (max - min);
+    }
+
+    function set_convassacle() {
+        ratio = document.getElementById("radar_scale").value;
+    }
+
+    let last_updated = [];
+    let simulation_times = [];
+    let entitylist = [];
+    let teamlist = [];
+    let localplayer;
+    drawbg();
+
+    ws.addEventListener("message", (e) => {
+        const obj = JSON.parse(e.data);
+
+        const map_name = obj["map_name"];
+
+        if (prev_map_name != map_name) {
+            prev_map_name = map_name;
+
+            image.src = base_data_path + "/images/" + map_name + "_radar.png";
+            update_map_data();
+
+            last_updated = [];
+        }
+
+        entitylist = obj["enemylist"];
+        teamlist = obj["teamlist"];
+        localplayer = obj["localplayer"];
+
+        for (const i in entitylist) {
+            const old_simulation_time = simulation_times[i];
+            const new_simulation_time = entitylist[i]["simulation_time"];
+            if (new_simulation_time != old_simulation_time)
+                last_updated[i] = new Date().getTime();
+            simulation_times[i] = new_simulation_time;
+        }
+
+
+    });
+
+    setInterval(() => {
+        set_convassacle();
+        clear_canvas();
+        ctx.save();
+        drawbg();
+        const now_ms = new Date().getTime();
+
+        let me_x_position;
+        let me_y_position;
+        let me_angle;
+        let me_mapped_x;
+        let me_mapped_y;
+        if (localplayer) {
+            me_x_position = localplayer["x_position"];
+            me_y_position = localplayer["y_position"];
+            me_angle = localplayer["rot_y_ang"];
+            me_mapped_x = ((me_x_position - pos_x) / scale) * ratio;
+            me_mapped_y = ((me_y_position - pos_y) / -scale) * ratio;
+        }
+
+        for (const i in entitylist) {
+            const health = entitylist[i]["health"];
+            const x_position = entitylist[i]["x_position"];
+            const y_position = entitylist[i]["y_position"];
+            const _angle = entitylist[i]["rot_y_ang"];
+            const gamename = entitylist[i]["game_name"];
+            const mapped_x = ((x_position - pos_x) / scale) * ratio - me_mapped_x;
+            const mapped_y = ((y_position - pos_y) / -scale) * ratio - me_mapped_y;
+            const health_percentage = normalize(health, 0, 100);
+            let col_red = 255 * health_percentage;
+            let col_green = 0;
+            let col_blue = 0;
+
+            // entity hasn't had updated info for over 500ms
+            if ((now_ms - last_updated[i]) > 500) {
+                col_red = 0;
+                col_green = 0;
+                col_blue = 255;
+            }
+
+            draw_entity(mapped_x, mapped_y, col_red, col_green, col_blue, 255, _angle, gamename);
+        }
+
+        for (const i in teamlist) {
+            if (DrawTeam.checked) {
+                const health = teamlist[i]["health"];
+                const x_position = teamlist[i]["x_position"];
+                const y_position = teamlist[i]["y_position"];
+                const mapped_x = ((x_position - pos_x) / scale) * ratio - me_mapped_x;
+                const mapped_y = ((y_position - pos_y) / -scale) * ratio - me_mapped_y;
+                const _angle = teamlist[i]["rot_y_ang"];
+                const gamename = teamlist[i]["game_name"];
+                let col_red = 255;
+                let col_green = 255;
+                let col_blue = 255;
+                draw_entity(mapped_x, mapped_y, col_red, col_green, col_blue, 255, _angle, me_angle, gamename);
+            }
+        }
+
+        if (localplayer) {
+            const me_health = localplayer["health"];
+            if (me_health > 0)
+                draw_local(me_mapped_x, me_mapped_y, 0, 255, 0, 255, me_angle, "Me");
+        }
+
+        ctx.restore();
+
+    }, 1000 / 100);
+
+
+</script>
